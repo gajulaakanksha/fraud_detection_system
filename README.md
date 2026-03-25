@@ -4,6 +4,18 @@ A production-ready ML-powered REST API for real-time financial transaction fraud
 
 ---
 
+## Dataset
+
+The CSV file is not included in this repo (470MB, exceeds GitHub's limit).
+Download it from Kaggle: [PaySim Financial Dataset](https://www.kaggle.com/datasets/ealaxi/paysim1)
+
+Place it in the project root as:
+```
+PS_20174392719_1491204439457_log.csv
+```
+
+---
+
 ## Quick Start
 
 ### 1. Install dependencies
