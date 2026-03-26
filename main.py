@@ -1,5 +1,5 @@
 """
-Fraud Detection API
+VALLI API
 FastAPI production service with real ML model inference
 """
 
@@ -30,7 +30,7 @@ model, FEATURES, label_encoder = load_artifacts()
 
 # ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="Fraud Detection API",
+    title="VALLI API",
     description="Real-time financial transaction fraud detection using ML",
     version="1.0.0"
 )
