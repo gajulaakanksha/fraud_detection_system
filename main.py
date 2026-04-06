@@ -4,6 +4,7 @@ FastAPI production service with real ML model inference
 """
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
 import numpy as np
 import joblib
@@ -33,6 +34,15 @@ app = FastAPI(
     title="VALLI API",
     description="Real-time financial transaction fraud detection using ML",
     version="1.0.0"
+)
+
+# This MUST be defined before your routes to prevent CORS errors
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ── Schemas ────────────────────────────────────────────────────────────────────
