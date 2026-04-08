@@ -1,6 +1,9 @@
 # Dataset (too large for GitHub - download from Kaggle)
 *.csv
 
+# Environment variables (contains secrets - never commit)
+.env
+
 # Trained model artifacts
 model/
 

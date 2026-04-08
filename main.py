@@ -17,7 +17,10 @@ import joblib
 import io
 import os
 import boto3
+from dotenv import load_dotenv
 from typing import Literal
+
+load_dotenv()
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 S3_MODEL_BUCKET = os.getenv("S3_MODEL_BUCKET", "valli-ai-models-224989089359-ap-south-1-an")

@@ -18,6 +18,7 @@ import numpy as np
 import joblib
 import os
 import boto3
+from dotenv import load_dotenv
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
@@ -25,6 +26,8 @@ from sklearn.metrics import (
     roc_auc_score, average_precision_score
 )
 from sklearn.preprocessing import LabelEncoder
+
+load_dotenv()
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 S3_DATA_BUCKET  = os.getenv("S3_DATA_BUCKET", "valli-ai-poc-data")
