@@ -1,6 +1,12 @@
 """
-VALLI API
+Fraud Detection API
 FastAPI production service with real ML model inference
+
+S3 Config (set as environment variables on EC2):
+  S3_MODEL_BUCKET = valli-ai-models-224989089359-ap-south-1-an   (bucket containing the .pkl files)
+  S3_MODEL_PREFIX = ""         (optional subfolder, e.g. "model/")
+
+Falls back to local ./model/ folder if S3_MODEL_BUCKET is not set.
 """
 
 from fastapi import FastAPI, HTTPException
@@ -8,30 +14,60 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
 import numpy as np
 import joblib
+import io
 import os
+import boto3
 from typing import Literal
 
+# ── Config ─────────────────────────────────────────────────────────────────────
+S3_MODEL_BUCKET = os.getenv("S3_MODEL_BUCKET", "valli-ai-models-224989089359-ap-south-1-an")
+S3_MODEL_PREFIX = os.getenv("S3_MODEL_PREFIX", "")*/
+MODEL_DIR       = "model"
+
+
 # ── Model loading ──────────────────────────────────────────────────────────────
-MODEL_DIR = "model"
+def _load_pkl_s3(s3, filename: str):
+    key = S3_MODEL_PREFIX + filename
+    print(f"Downloading s3://{S3_MODEL_BUCKET}/{key}")
+    response = s3.get_object(Bucket=S3_MODEL_BUCKET, Key=key)
+    return joblib.load(io.BytesIO(response["Body"].read()))
+
 
 def load_artifacts():
-    model_path    = os.path.join(MODEL_DIR, "fraud_model.pkl")
-    features_path = os.path.join(MODEL_DIR, "features.pkl")
-    encoder_path  = os.path.join(MODEL_DIR, "label_encoder.pkl")
+    if S3_MODEL_BUCKET:
+        try:
+            s3 = boto3.client("s3")
+            model    = _load_pkl_s3(s3, "fraud_model.pkl")
+            features = _load_pkl_s3(s3, "features.pkl")
+            encoder  = _load_pkl_s3(s3, "label_encoder.pkl")
+            print("Model loaded from S3.")
+            return model, features, encoder
+        except Exception as e:
+            print(f"S3 load failed: {e} — trying local fallback")
 
-    if not all(os.path.exists(p) for p in [model_path, features_path, encoder_path]):
+    # Local fallback
+    paths = [
+        os.path.join(MODEL_DIR, "fraud_model.pkl"),
+        os.path.join(MODEL_DIR, "features.pkl"),
+        os.path.join(MODEL_DIR, "label_encoder.pkl"),
+    ]
+    if not all(os.path.exists(p) for p in paths):
+        print("Model artifacts not found.")
         return None, None, None
 
-    model    = joblib.load(model_path)
-    features = joblib.load(features_path)
-    encoder  = joblib.load(encoder_path)
+    model    = joblib.load(paths[0])
+    features = joblib.load(paths[1])
+    encoder  = joblib.load(paths[2])
+    print("Model loaded from local disk.")
     return model, features, encoder
+
 
 model, FEATURES, label_encoder = load_artifacts()
 
+
 # ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="VALLI API",
+    title="Fraud Detection API",
     description="Real-time financial transaction fraud detection using ML",
     version="1.0.0"
 )
@@ -44,6 +80,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # ── Schemas ────────────────────────────────────────────────────────────────────
 class TransactionRequest(BaseModel):
@@ -85,45 +122,37 @@ class BatchPredictionResponse(BaseModel):
     total: int
     fraud_count: int
 
-# ── Feature engineering (mirrors train_model.py) ───────────────────────────────
+
+# ── Feature engineering ────────────────────────────────────────────────────────
 def build_features(tx: TransactionRequest) -> np.ndarray:
     type_enc = int(label_encoder.transform([tx.type])[0])
-
-    balance_diff_orig       = tx.oldbalanceOrg - tx.newbalanceOrig
-    balance_diff_dest       = tx.newbalanceDest - tx.oldbalanceDest
-    amount_to_orig_balance  = tx.amount / tx.oldbalanceOrg if tx.oldbalanceOrg > 0 else 0.0
-    orig_balance_zero       = int(tx.newbalanceOrig == 0)
-    dest_balance_zero       = int(tx.oldbalanceDest == 0)
-    error_balance_orig      = tx.oldbalanceOrg - tx.amount - tx.newbalanceOrig
-    error_balance_dest      = tx.oldbalanceDest + tx.amount - tx.newbalanceDest
-
     row = [
         tx.step, type_enc, tx.amount,
         tx.oldbalanceOrg, tx.newbalanceOrig,
         tx.oldbalanceDest, tx.newbalanceDest,
-        balance_diff_orig, balance_diff_dest,
-        amount_to_orig_balance, orig_balance_zero,
-        dest_balance_zero, error_balance_orig, error_balance_dest
+        tx.oldbalanceOrg - tx.newbalanceOrig,
+        tx.newbalanceDest - tx.oldbalanceDest,
+        tx.amount / tx.oldbalanceOrg if tx.oldbalanceOrg > 0 else 0.0,
+        int(tx.newbalanceOrig == 0),
+        int(tx.oldbalanceDest == 0),
+        tx.oldbalanceOrg - tx.amount - tx.newbalanceOrig,
+        tx.oldbalanceDest + tx.amount - tx.newbalanceDest,
     ]
     return np.array(row).reshape(1, -1)
 
 
 def risk_label(prob: float) -> str:
-    if prob < 0.25:
-        return "low"
-    elif prob < 0.50:
-        return "medium"
-    elif prob < 0.75:
-        return "high"
+    if prob < 0.25:   return "low"
+    elif prob < 0.50: return "medium"
+    elif prob < 0.75: return "high"
     return "critical"
 
 
 def make_prediction(tx: TransactionRequest) -> PredictionResponse:
-    X = build_features(tx)
+    X     = build_features(tx)
     proba = float(model.predict_proba(X)[0][1])
     pred  = "fraud" if proba >= 0.5 else "legitimate"
     conf  = proba if pred == "fraud" else 1 - proba
-
     return PredictionResponse(
         prediction=pred,
         fraud_probability=round(proba, 4),
@@ -131,58 +160,33 @@ def make_prediction(tx: TransactionRequest) -> PredictionResponse:
         confidence=round(conf, 4)
     )
 
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 def health_check():
-    """Check API and model status."""
-    return HealthResponse(
-        status="API is running successfully",
-        model_loaded=model is not None
-    )
+    return HealthResponse(status="API is running successfully", model_loaded=model is not None)
 
 
 @app.post("/predict", response_model=PredictionResponse, tags=["Prediction"])
 def predict(transaction: TransactionRequest):
-    """
-    Predict whether a single transaction is fraudulent.
-
-    - Only TRANSFER and CASH_OUT types are supported (fraud only occurs in these).
-    - Returns fraud probability, prediction label, and risk level.
-    """
     if model is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Model not loaded. Run train_model.py first."
-        )
+        raise HTTPException(status_code=503, detail="Model not loaded.")
     return make_prediction(transaction)
 
 
 @app.post("/predict/batch", response_model=BatchPredictionResponse, tags=["Prediction"])
 def predict_batch(request: BatchTransactionRequest):
-    """
-    Predict fraud for a batch of transactions (max 500).
-    """
     if model is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Model not loaded. Run train_model.py first."
-        )
+        raise HTTPException(status_code=503, detail="Model not loaded.")
     if len(request.transactions) > 500:
         raise HTTPException(status_code=400, detail="Batch size cannot exceed 500.")
-
-    results = [make_prediction(tx) for tx in request.transactions]
+    results     = [make_prediction(tx) for tx in request.transactions]
     fraud_count = sum(1 for r in results if r.prediction == "fraud")
-
-    return BatchPredictionResponse(
-        results=results,
-        total=len(results),
-        fraud_count=fraud_count
-    )
+    return BatchPredictionResponse(results=results, total=len(results), fraud_count=fraud_count)
 
 
 @app.get("/model/info", tags=["System"])
 def model_info():
-    """Return model metadata and feature list."""
     if model is None:
         raise HTTPException(status_code=503, detail="Model not loaded.")
     return {
